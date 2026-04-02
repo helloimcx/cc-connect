@@ -192,8 +192,9 @@ type Event struct {
 
 // HistoryEntry is one turn in a conversation.
 type HistoryEntry struct {
-	Role      string    `json:"role"` // "user" or "assistant"
+	Role      string    `json:"role"`           // "user" or "assistant"
 	Content   string    `json:"content"`
+	Kind      string    `json:"kind,omitempty"` // "final" (default) or "progress"
 	Timestamp time.Time `json:"timestamp"`
 }
 

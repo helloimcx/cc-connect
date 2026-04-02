@@ -194,12 +194,16 @@ func TestSession_TryLockUnlock(t *testing.T) {
 func TestSession_History(t *testing.T) {
 	s := &Session{}
 	s.AddHistory("user", "hello")
+	s.AddHistoryWithKind("assistant", "thinking...", "progress")
 	s.AddHistory("assistant", "hi there")
 	s.AddHistory("user", "bye")
 
 	all := s.GetHistory(0)
-	if len(all) != 3 {
-		t.Errorf("expected 3 entries, got %d", len(all))
+	if len(all) != 4 {
+		t.Errorf("expected 4 entries, got %d", len(all))
+	}
+	if all[1].Kind != "progress" {
+		t.Fatalf("expected progress kind on second entry, got %q", all[1].Kind)
 	}
 
 	last2 := s.GetHistory(2)
@@ -208,6 +212,16 @@ func TestSession_History(t *testing.T) {
 	}
 	if last2[0].Content != "hi there" {
 		t.Errorf("expected 'hi there', got %q", last2[0].Content)
+	}
+
+	conversation := s.GetConversationHistory(0)
+	if len(conversation) != 3 {
+		t.Fatalf("expected 3 conversation entries, got %d", len(conversation))
+	}
+	for _, entry := range conversation {
+		if entry.Kind == "progress" {
+			t.Fatalf("conversation history should exclude progress entries")
+		}
 	}
 
 	s.ClearHistory()

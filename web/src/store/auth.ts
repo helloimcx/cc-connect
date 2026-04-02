@@ -16,12 +16,14 @@ export const useAuthStore = create<AuthState>((set) => ({
   isAuthenticated: false,
   login: (token: string, serverUrl?: string) => {
     api.setToken(token);
+    if (serverUrl) api.setBaseUrl(serverUrl);
     localStorage.setItem('cc_token', token);
     if (serverUrl) localStorage.setItem('cc_server_url', serverUrl);
     set({ token, serverUrl: serverUrl || '', isAuthenticated: true });
   },
   logout: () => {
     api.setToken('');
+    api.setBaseUrl('');
     localStorage.removeItem('cc_token');
     localStorage.removeItem('cc_server_url');
     set({ token: '', serverUrl: '', isAuthenticated: false });
@@ -31,6 +33,9 @@ export const useAuthStore = create<AuthState>((set) => ({
     const serverUrl = localStorage.getItem('cc_server_url') || '';
     if (token) {
       api.setToken(token);
+      if (serverUrl) {
+        api.setBaseUrl(serverUrl);
+      }
       set({ token, serverUrl, isAuthenticated: true });
     }
   },

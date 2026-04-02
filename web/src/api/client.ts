@@ -1,14 +1,30 @@
-const API_BASE = '/api/v1';
+const DEFAULT_API_BASE = '/api/v1';
 
 class ApiClient {
   private token: string = '';
+  private baseUrl: string = DEFAULT_API_BASE;
 
   setToken(token: string) {
     this.token = token;
   }
 
+  setBaseUrl(baseUrl: string) {
+    const trimmed = baseUrl.trim();
+    if (!trimmed) {
+      this.baseUrl = DEFAULT_API_BASE;
+      return;
+    }
+    this.baseUrl = trimmed.endsWith('/api/v1')
+      ? trimmed
+      : `${trimmed.replace(/\/+$/, '')}/api/v1`;
+  }
+
   getToken(): string {
     return this.token;
+  }
+
+  getBaseUrl(): string {
+    return this.baseUrl;
   }
 
   private headers(): HeadersInit {
@@ -18,7 +34,7 @@ class ApiClient {
   }
 
   async request<T = any>(method: string, path: string, body?: any, params?: Record<string, string>): Promise<T> {
-    let url = `${API_BASE}${path}`;
+    let url = this.resolveUrl(path);
     if (params) {
       const qs = new URLSearchParams(params).toString();
       if (qs) url += `?${qs}`;
@@ -39,6 +55,14 @@ class ApiClient {
   post<T = any>(path: string, body?: any) { return this.request<T>('POST', path, body); }
   patch<T = any>(path: string, body?: any) { return this.request<T>('PATCH', path, body); }
   delete<T = any>(path: string) { return this.request<T>('DELETE', path); }
+
+  private resolveUrl(path: string) {
+    const normalizedPath = path.replace(/^\/+/, '');
+    if (this.baseUrl.startsWith('http://') || this.baseUrl.startsWith('https://')) {
+      return new URL(normalizedPath, `${this.baseUrl}/`).toString();
+    }
+    return `${this.baseUrl}/${normalizedPath}`.replace(/([^:]\/)\/+/g, '$1');
+  }
 }
 
 export class ApiError extends Error {

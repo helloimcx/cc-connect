@@ -2065,6 +2065,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 	var textParts []string
 	var segmentStart int // index into textParts: text before this has been sent/displayed
 	toolCount := 0
+	hadVisibleToolResult := false
 	waitStart := time.Now()
 	firstEventLogged := false
 	triggerAutoCompress := false
@@ -2198,6 +2199,8 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				}
 				preview := truncateIf(event.Content, e.display.ThinkingMaxLen)
 				thinkingMsg := fmt.Sprintf(e.i18n.T(MsgThinking), preview)
+				session.AddHistoryWithKind("assistant", thinkingMsg, "progress")
+				sessions.Save()
 				if !cp.AppendEvent(ProgressEntryThinking, preview, "", thinkingMsg) {
 					e.send(p, replyCtx, thinkingMsg)
 				}
@@ -2242,6 +2245,8 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					}
 				}
 				toolMsg := fmt.Sprintf(e.i18n.T(MsgTool), toolCount, event.ToolName, formattedInput)
+				session.AddHistoryWithKind("assistant", toolMsg, "progress")
+				sessions.Save()
 				if !cp.AppendEvent(ProgressEntryToolUse, toolInput, event.ToolName, toolMsg) {
 					for _, chunk := range SplitMessageCodeFenceAware(toolMsg, maxPlatformMessageLen) {
 						e.send(p, replyCtx, chunk)
@@ -2273,6 +2278,9 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 							e.send(p, replyCtx, resultMsg)
 						}
 					}
+					session.AddHistoryWithKind("assistant", resultMsg, "progress")
+					sessions.Save()
+					hadVisibleToolResult = true
 				}
 			}
 
@@ -2381,7 +2389,8 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			if fullResponse == "" && len(textParts) > 0 {
 				fullResponse = strings.Join(textParts, "")
 			}
-			if fullResponse == "" {
+			skipSyntheticEmptyResponse := fullResponse == "" && hadVisibleToolResult
+			if fullResponse == "" && !skipSyntheticEmptyResponse {
 				fullResponse = e.i18n.T(MsgEmptyResponse)
 			}
 
@@ -2394,7 +2403,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			// Evaluate auto-compress trigger (token estimate on user+assistant text,
 			// including this turn's assistant reply before it is appended to history).
 			if e.autoCompressEnabled && e.autoCompressMaxTokens > 0 {
-				estimate := estimateTokensWithPendingAssistant(session.GetHistory(0), cleanResponse)
+				estimate := estimateTokensWithPendingAssistant(session.GetConversationHistory(0), cleanResponse)
 				now := time.Now()
 				state.mu.Lock()
 				last := state.lastAutoCompressAt
@@ -2407,8 +2416,10 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				}
 			}
 
-			session.AddHistory("assistant", cleanResponse)
-			sessions.Save()
+			if cleanResponse != "" {
+				session.AddHistory("assistant", cleanResponse)
+				sessions.Save()
+			}
 
 			if e.showContextIndicator {
 				if sdkPlausible {
@@ -2456,6 +2467,9 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			} else if suppressDuplicate {
 				sp.discard()
 				slog.Debug("EventResult: suppressed duplicate side-channel text", "response_len", len(fullResponse))
+			} else if fullResponse == "" {
+				sp.discard()
+				slog.Debug("EventResult: suppressed synthetic empty response after visible tool result")
 			} else if sp.finish(fullResponse) {
 				slog.Debug("EventResult: finalized via stream preview", "response_len", len(fullResponse))
 			} else {

@@ -31,6 +31,9 @@ export default function Login() {
     setLoading(true);
     setError('');
     try {
+      if (serverUrl.trim()) {
+        api.setBaseUrl(serverUrl.trim());
+      }
       api.setToken(token.trim());
       await getStatus();
       login(token.trim(), serverUrl.trim());
@@ -38,6 +41,7 @@ export default function Login() {
     } catch {
       setError(t('login.invalidToken'));
       api.setToken('');
+      api.setBaseUrl('');
     } finally {
       setLoading(false);
     }

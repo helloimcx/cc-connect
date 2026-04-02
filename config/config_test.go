@@ -9,6 +9,10 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+func boolPtr(v bool) *bool {
+	return &v
+}
+
 func TestConfigValidate(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -54,6 +58,22 @@ func TestConfigValidate(t *testing.T) {
 				},
 			},
 			wantErr: `projects[0] needs at least one [[projects.platforms]]`,
+		},
+		{
+			name: "allows no platform when bridge enabled",
+			cfg: Config{
+				Bridge: BridgeConfig{
+					Enabled: boolPtr(true),
+					Token:   "desktop-bridge-token",
+				},
+				Projects: []ProjectConfig{
+					func() ProjectConfig {
+						p := validProject("demo")
+						p.Platforms = nil
+						return p
+					}(),
+				},
+			},
 		},
 		{
 			name: "requires platform type",

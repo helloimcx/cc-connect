@@ -44,6 +44,9 @@ type bridgeEngineRef struct {
 
 type bridgeAdapter struct {
 	platform     string
+	project      string
+	metadata     map[string]any
+	connectedAt  time.Time
 	capabilities map[string]bool
 	conn         *websocket.Conn
 	writeMu      sync.Mutex
@@ -538,6 +541,9 @@ func (bs *BridgeServer) handleConnection(conn *websocket.Conn) {
 
 	adapter := &bridgeAdapter{
 		platform:        reg.Platform,
+		project:         reg.Project,
+		metadata:        reg.Metadata,
+		connectedAt:     time.Now(),
 		capabilities:    caps,
 		conn:            conn,
 		server:          bs,
@@ -881,8 +887,10 @@ func (bs *BridgeServer) handleSessionRoutes(w http.ResponseWriter, r *http.Reque
 		histJSON := make([]map[string]any, len(hist))
 		for i, h := range hist {
 			histJSON[i] = map[string]any{
-				"role":    h.Role,
-				"content": h.Content,
+				"role":      h.Role,
+				"content":   h.Content,
+				"kind":      h.Kind,
+				"timestamp": h.Timestamp,
 			}
 		}
 		bridgeJSON(w, http.StatusOK, map[string]any{
@@ -993,6 +1001,24 @@ func (bs *BridgeServer) platformFromSessionKey(sessionKey string) string {
 func (bs *BridgeServer) resolveEngine(sessionKey string) *bridgeEngineRef {
 	bs.enginesMu.RLock()
 	defer bs.enginesMu.RUnlock()
+
+	parts := strings.SplitN(sessionKey, ":", 3)
+	if len(parts) == 3 && parts[0] == "desktop" {
+		if ref, ok := bs.engines[parts[1]]; ok {
+			return ref
+		}
+	}
+
+	if len(parts) > 0 {
+		bs.mu.RLock()
+		adapter := bs.adapters[parts[0]]
+		bs.mu.RUnlock()
+		if adapter != nil && adapter.project != "" {
+			if ref, ok := bs.engines[adapter.project]; ok {
+				return ref
+			}
+		}
+	}
 
 	if len(bs.engines) == 1 {
 		for _, ref := range bs.engines {

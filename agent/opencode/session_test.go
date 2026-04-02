@@ -67,5 +67,51 @@ func TestNewOpencodeSession_ContinueSessionTreatedAsFresh(t *testing.T) {
 	}
 }
 
+func TestHandleToolUse_ErrorEmitsFailedToolResult(t *testing.T) {
+	s, err := newOpencodeSession(context.Background(), "echo", "/tmp", "", "default", "", nil)
+	if err != nil {
+		t.Fatalf("newOpencodeSession: %v", err)
+	}
+	defer s.Close()
+
+	s.handleEvent(map[string]any{
+		"type": "tool_use",
+		"part": map[string]any{
+			"type": "tool",
+			"tool": "bash",
+			"state": map[string]any{
+				"status": "error",
+				"title":  "Delete temp file",
+				"error":  "The user rejected permission to use this specific tool call.",
+			},
+		},
+	})
+
+	useEvt := <-s.Events()
+	if useEvt.Type != core.EventToolUse {
+		t.Fatalf("first event type = %v, want %v", useEvt.Type, core.EventToolUse)
+	}
+	if useEvt.ToolName != "bash" {
+		t.Fatalf("tool name = %q, want bash", useEvt.ToolName)
+	}
+	if useEvt.ToolInput != "Delete temp file" {
+		t.Fatalf("tool input = %q, want %q", useEvt.ToolInput, "Delete temp file")
+	}
+
+	resultEvt := <-s.Events()
+	if resultEvt.Type != core.EventToolResult {
+		t.Fatalf("second event type = %v, want %v", resultEvt.Type, core.EventToolResult)
+	}
+	if resultEvt.ToolStatus != "failed" {
+		t.Fatalf("tool status = %q, want failed", resultEvt.ToolStatus)
+	}
+	if resultEvt.ToolSuccess == nil || *resultEvt.ToolSuccess {
+		t.Fatalf("tool success = %#v, want false", resultEvt.ToolSuccess)
+	}
+	if resultEvt.ToolResult != "The user rejected permission to use this specific tool call." {
+		t.Fatalf("tool result = %q", resultEvt.ToolResult)
+	}
+}
+
 // verify Agent implements core.Agent
 var _ core.Agent = (*Agent)(nil)

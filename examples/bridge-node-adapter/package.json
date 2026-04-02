@@ -1,0 +1,13 @@
+{
+  "name": "cc-connect-bridge-node-adapter-example",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Minimal Node.js adapter example for cc-connect bridge",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

@@ -885,6 +885,53 @@ func TestProcessInteractiveEvents_QuietToolTurnKeepsPreviewOnFinalize(t *testing
 	}
 }
 
+func TestProcessInteractiveEvents_ToolFailureDoesNotFabricateEmptyResponse(t *testing.T) {
+	p := &stubPlatformEngine{n: "mock"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	sessionKey := "mock:user-tool-failure"
+	session := e.sessions.GetOrCreateActive(sessionKey)
+	agentSession := newControllableSession("s-tool-failure")
+	state := &interactiveState{
+		agentSession: agentSession,
+		platform:     p,
+		replyCtx:     "ctx-tool-failure",
+	}
+	e.interactiveStates[sessionKey] = state
+
+	failed := false
+	agentSession.events <- Event{Type: EventToolUse, ToolName: "bash", ToolInput: "rm /tmp/outside-file"}
+	agentSession.events <- Event{
+		Type:        EventToolResult,
+		ToolName:    "bash",
+		ToolResult:  "The user rejected permission to use this specific tool call.",
+		ToolStatus:  "failed",
+		ToolSuccess: &failed,
+	}
+	agentSession.events <- Event{Type: EventResult, Content: "", Done: true}
+
+	e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m-tool-failure", time.Now(), nil, nil, nil)
+
+	sent := p.getSent()
+	if len(sent) != 2 {
+		t.Fatalf("sent = %#v, want tool-use and tool-result only", sent)
+	}
+	if strings.Contains(strings.Join(sent, "\n"), "(empty response)") {
+		t.Fatalf("sent should not contain synthetic empty response: %#v", sent)
+	}
+
+	history := session.GetHistory(0)
+	if len(history) < 2 {
+		t.Fatalf("history len = %d, want at least 2 entries", len(history))
+	}
+	last := history[len(history)-1]
+	if last.Kind != "progress" {
+		t.Fatalf("last history kind = %q, want progress", last.Kind)
+	}
+	if strings.Contains(last.Content, "(empty response)") {
+		t.Fatalf("last history should not contain synthetic empty response: %q", last.Content)
+	}
+}
+
 func TestProcessInteractiveEvents_CompactProgressCoalescesThinkingAndToolUse(t *testing.T) {
 	p := &stubCompactProgressPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)

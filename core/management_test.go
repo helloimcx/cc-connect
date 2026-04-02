@@ -6,8 +6,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/chenhg5/cc-connect/config"
 )
 
 // testManagementServer creates a ManagementServer with a test engine and returns an httptest.Server.
@@ -28,6 +32,7 @@ func testManagementServer(t *testing.T, token string) (*ManagementServer, *httpt
 	mux.HandleFunc(prefix+"/restart", mgmt.wrap(mgmt.handleRestart))
 	mux.HandleFunc(prefix+"/reload", mgmt.wrap(mgmt.handleReload))
 	mux.HandleFunc(prefix+"/config", mgmt.wrap(mgmt.handleConfig))
+	mux.HandleFunc(prefix+"/config/file", mgmt.wrap(mgmt.handleConfigFile))
 	mux.HandleFunc(prefix+"/projects", mgmt.wrap(mgmt.handleProjects))
 	mux.HandleFunc(prefix+"/projects/", mgmt.wrap(mgmt.handleProjectRoutes))
 	mux.HandleFunc(prefix+"/cron", mgmt.wrap(mgmt.handleCron))
@@ -270,6 +275,7 @@ func TestMgmt_SessionDetail(t *testing.T) {
 
 	s := e.sessions.GetOrCreateActive("user1")
 	s.AddHistory("user", "hello")
+	s.AddHistoryWithKind("assistant", "thinking...", "progress")
 	s.AddHistory("assistant", "hi there")
 
 	r := mgmtGet(t, ts.URL+"/api/v1/projects/test-project/sessions/"+s.ID, "tok")
@@ -283,8 +289,11 @@ func TestMgmt_SessionDetail(t *testing.T) {
 	if err := json.Unmarshal(r.Data, &data); err != nil {
 		t.Fatalf("unmarshal session detail: %v", err)
 	}
-	if len(data.History) != 2 {
-		t.Fatalf("expected 2 history entries, got %d", len(data.History))
+	if len(data.History) != 3 {
+		t.Fatalf("expected 3 history entries, got %d", len(data.History))
+	}
+	if kind, _ := data.History[1]["kind"].(string); kind != "progress" {
+		t.Fatalf("expected progress kind in history payload, got %#v", data.History[1]["kind"])
 	}
 }
 
@@ -302,6 +311,21 @@ func TestMgmt_SessionDelete(t *testing.T) {
 	r = mgmtGet(t, ts.URL+"/api/v1/projects/test-project/sessions/"+sid, "tok")
 	if r.OK {
 		t.Fatal("expected 404 after deletion")
+	}
+}
+
+func TestMgmt_SessionRename(t *testing.T) {
+	_, ts, e := testManagementServer(t, "tok")
+
+	s := e.sessions.GetOrCreateActive("user1")
+	r := mgmtPatch(t, ts.URL+"/api/v1/projects/test-project/sessions/"+s.ID, "tok", map[string]string{
+		"name": "Renamed Session",
+	})
+	if !r.OK {
+		t.Fatalf("rename session failed: %s", r.Error)
+	}
+	if got := e.sessions.FindByID(s.ID); got == nil || got.GetName() != "Renamed Session" {
+		t.Fatalf("expected renamed session, got %#v", got)
 	}
 }
 
@@ -610,5 +634,70 @@ func TestMgmt_ProjectModel_ReturnsErrorWhenModelSaveFails(t *testing.T) {
 	}
 	if got := agent.GetModel(); got != "gpt-4.1-mini" {
 		t.Fatalf("GetModel() = %q, want unchanged gpt-4.1-mini", got)
+	}
+}
+
+func TestMgmt_ConfigFile(t *testing.T) {
+	_, ts, e := testManagementServer(t, "tok")
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte(`
+[log]
+level = "info"
+
+[[projects]]
+name = "test-project"
+
+[projects.agent]
+type = "codex"
+
+[projects.agent.options]
+work_dir = "."
+
+[[projects.platforms]]
+type = "telegram"
+
+[projects.platforms.options]
+bot_token = "abc"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	prevConfigPath := config.ConfigPath
+	config.ConfigPath = path
+	t.Cleanup(func() { config.ConfigPath = prevConfigPath })
+
+	reloaded := false
+	e.configReloadFunc = func() (*ConfigReloadResult, error) {
+		reloaded = true
+		return &ConfigReloadResult{}, nil
+	}
+
+	r := mgmtGet(t, ts.URL+"/api/v1/config/file", "tok")
+	if !r.OK {
+		t.Fatalf("config file get failed: %s", r.Error)
+	}
+
+	var buf bytes.Buffer
+	mustEncodeJSON(t, &buf, map[string]any{
+		"raw_toml": "[log]\nlevel = \"debug\"\n\n[[projects]]\nname = \"test-project\"\n\n[projects.agent]\ntype = \"codex\"\n\n[projects.agent.options]\nwork_dir = \".\"\n\n[[projects.platforms]]\ntype = \"telegram\"\n\n[projects.platforms.options]\nbot_token = \"abc\"\n",
+	})
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/api/v1/config/file", &buf)
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT config file: %v", err)
+	}
+	defer resp.Body.Close()
+	var putResp mgmtResponse
+	if err := json.NewDecoder(resp.Body).Decode(&putResp); err != nil {
+		t.Fatalf("decode PUT response: %v", err)
+	}
+	if !putResp.OK {
+		t.Fatalf("config file put failed: %s", putResp.Error)
+	}
+	if !reloaded {
+		t.Fatal("expected config reload after PUT /config/file")
 	}
 }

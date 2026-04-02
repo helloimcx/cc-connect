@@ -692,3 +692,17 @@ func TestBridge_SessionMissingParams(t *testing.T) {
 		t.Fatal("expected error without target in switch")
 	}
 }
+
+func TestBridge_ResolveEngineDesktopProjectRoute(t *testing.T) {
+	bs := NewBridgeServer(0, "", "/bridge/ws", nil)
+
+	first := NewEngine("proj-a", &stubAgent{}, nil, "", LangEnglish)
+	second := NewEngine("proj-b", &stubAgent{}, nil, "", LangEnglish)
+	bs.engines["proj-a"] = &bridgeEngineRef{engine: first}
+	bs.engines["proj-b"] = &bridgeEngineRef{engine: second}
+
+	got := bs.resolveEngine("desktop:proj-b:chat-1")
+	if got == nil || got.engine != second {
+		t.Fatalf("expected proj-b engine, got %#v", got)
+	}
+}

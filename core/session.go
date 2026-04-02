@@ -46,11 +46,16 @@ func (s *Session) Unlock() {
 }
 
 func (s *Session) AddHistory(role, content string) {
+	s.AddHistoryWithKind(role, content, "")
+}
+
+func (s *Session) AddHistoryWithKind(role, content, kind string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.History = append(s.History, HistoryEntry{
 		Role:      role,
 		Content:   content,
+		Kind:      kind,
 		Timestamp: time.Now(),
 	})
 }
@@ -129,12 +134,31 @@ func (s *Session) ClearHistory() {
 func (s *Session) GetHistory(n int) []HistoryEntry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	total := len(s.History)
+	return copyHistoryEntries(s.History, n)
+}
+
+// GetConversationHistory returns only user/final-assistant entries.
+// Progress entries are omitted so agent context and token estimates stay stable.
+func (s *Session) GetConversationHistory(n int) []HistoryEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	filtered := make([]HistoryEntry, 0, len(s.History))
+	for _, entry := range s.History {
+		if entry.Kind == "progress" {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return copyHistoryEntries(filtered, n)
+}
+
+func copyHistoryEntries(entries []HistoryEntry, n int) []HistoryEntry {
+	total := len(entries)
 	if n <= 0 || n > total {
 		n = total
 	}
 	out := make([]HistoryEntry, n)
-	copy(out, s.History[total-n:])
+	copy(out, entries[total-n:])
 	return out
 }
 

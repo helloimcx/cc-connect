@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -239,6 +240,39 @@ func (s *opencodeSession) handleToolUse(raw map[string]any) {
 
 		output, _ := state["output"].(string)
 		resultEvt := core.Event{Type: core.EventToolResult, ToolName: toolName, Content: truncate(output, 500)}
+		select {
+		case s.events <- resultEvt:
+		case <-s.ctx.Done():
+			return
+		}
+	} else if status == "error" {
+		useEvt := core.Event{Type: core.EventToolUse, ToolName: toolName, ToolInput: input}
+		select {
+		case s.events <- useEvt:
+		case <-s.ctx.Done():
+			return
+		}
+
+		errMsg, _ := state["error"].(string)
+		errMsg = strings.TrimSpace(errMsg)
+		if errMsg == "" {
+			if meta, _ := state["metadata"].(map[string]any); meta != nil {
+				if msg, _ := meta["error"].(string); strings.TrimSpace(msg) != "" {
+					errMsg = strings.TrimSpace(msg)
+				}
+			}
+		}
+		if errMsg == "" {
+			errMsg = "OpenCode rejected this tool call."
+		}
+		failed := false
+		resultEvt := core.Event{
+			Type:        core.EventToolResult,
+			ToolName:    toolName,
+			ToolResult:  errMsg,
+			ToolStatus:  "failed",
+			ToolSuccess: &failed,
+		}
 		select {
 		case s.events <- resultEvt:
 		case <-s.ctx.Done():

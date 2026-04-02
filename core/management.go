@@ -10,6 +10,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/BurntSushi/toml"
+	"github.com/chenhg5/cc-connect/config"
 )
 
 // ManagementServer provides an HTTP REST API for external management tools
@@ -59,6 +62,7 @@ func (m *ManagementServer) Start() {
 	mux.HandleFunc(prefix+"/restart", m.wrap(m.handleRestart))
 	mux.HandleFunc(prefix+"/reload", m.wrap(m.handleReload))
 	mux.HandleFunc(prefix+"/config", m.wrap(m.handleConfig))
+	mux.HandleFunc(prefix+"/config/file", m.wrap(m.handleConfigFile))
 
 	// Projects
 	mux.HandleFunc(prefix+"/projects", m.wrap(m.handleProjects))
@@ -227,18 +231,10 @@ func (m *ManagementServer) handleReload(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	var updated []string
-	for name, e := range m.engines {
-		if e.configReloadFunc != nil {
-			if _, err := e.configReloadFunc(); err != nil {
-				mgmtError(w, http.StatusInternalServerError, fmt.Sprintf("reload %s: %v", name, err))
-				return
-			}
-			updated = append(updated, name)
-		}
+	updated, err := m.reloadProjects()
+	if err != nil {
+		mgmtError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 
 	mgmtJSON(w, http.StatusOK, map[string]any{
@@ -284,9 +280,107 @@ func (m *ManagementServer) handleConfig(w http.ResponseWriter, r *http.Request) 
 		projects = append(projects, proj)
 	}
 
+	rawTOML := ""
+	if raw, err := config.ReadRaw(); err == nil {
+		rawTOML = string(raw)
+	}
+
+	var parsedConfig any
+	if cfg, err := config.LoadCurrent(); err == nil {
+		parsedConfig = cfg
+	}
+
 	mgmtJSON(w, http.StatusOK, map[string]any{
-		"projects": projects,
+		"projects":    projects,
+		"config_path": config.ConfigPath,
+		"raw_toml":    rawTOML,
+		"config":      parsedConfig,
 	})
+}
+
+func (m *ManagementServer) handleConfigFile(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		raw, err := config.ReadRaw()
+		if err != nil {
+			mgmtError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		cfg, err := config.LoadCurrent()
+		if err != nil {
+			mgmtError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		mgmtJSON(w, http.StatusOK, map[string]any{
+			"path":     config.ConfigPath,
+			"raw_toml": string(raw),
+			"config":   cfg,
+		})
+
+	case http.MethodPut:
+		var body struct {
+			RawTOML string         `json:"raw_toml"`
+			Config  *config.Config `json:"config"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+
+		switch {
+		case body.RawTOML != "":
+			var cfg config.Config
+			if err := toml.Unmarshal([]byte(body.RawTOML), &cfg); err != nil {
+				mgmtError(w, http.StatusBadRequest, "invalid TOML: "+err.Error())
+				return
+			}
+			if err := config.SaveCurrent(&cfg); err != nil {
+				mgmtError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		case body.Config != nil:
+			if err := config.SaveCurrent(body.Config); err != nil {
+				mgmtError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		default:
+			mgmtError(w, http.StatusBadRequest, "raw_toml or config is required")
+			return
+		}
+
+		updated, err := m.reloadProjects()
+		if err != nil {
+			mgmtError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		raw, _ := config.ReadRaw()
+		cfg, _ := config.LoadCurrent()
+		mgmtJSON(w, http.StatusOK, map[string]any{
+			"path":             config.ConfigPath,
+			"raw_toml":         string(raw),
+			"config":           cfg,
+			"projects_updated": updated,
+		})
+
+	default:
+		mgmtError(w, http.StatusMethodNotAllowed, "GET or PUT only")
+	}
+}
+
+func (m *ManagementServer) reloadProjects() ([]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var updated []string
+	for name, e := range m.engines {
+		if e.configReloadFunc != nil {
+			if _, err := e.configReloadFunc(); err != nil {
+				return nil, fmt.Errorf("reload %s: %v", name, err)
+			}
+			updated = append(updated, name)
+		}
+	}
+	return updated, nil
 }
 
 // ── Project endpoints ─────────────────────────────────────────
@@ -675,6 +769,7 @@ func (m *ManagementServer) handleProjectSessionDetail(w http.ResponseWriter, r *
 			histJSON[i] = map[string]any{
 				"role":      h.Role,
 				"content":   h.Content,
+				"kind":      h.Kind,
 				"timestamp": h.Timestamp,
 			}
 		}
@@ -711,6 +806,30 @@ func (m *ManagementServer) handleProjectSessionDetail(w http.ResponseWriter, r *
 
 		mgmtJSON(w, http.StatusOK, data)
 
+	case http.MethodPatch:
+		s := e.sessions.FindByID(sessionID)
+		if s == nil {
+			mgmtError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		var body struct {
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		s.mu.Lock()
+		s.Name = strings.TrimSpace(body.Name)
+		s.UpdatedAt = time.Now()
+		name := s.Name
+		s.mu.Unlock()
+		e.sessions.Save()
+		mgmtJSON(w, http.StatusOK, map[string]any{
+			"id":   s.ID,
+			"name": name,
+		})
+
 	case http.MethodDelete:
 		if e.sessions.DeleteByID(sessionID) {
 			mgmtOK(w, "session deleted")
@@ -719,7 +838,7 @@ func (m *ManagementServer) handleProjectSessionDetail(w http.ResponseWriter, r *
 		}
 
 	default:
-		mgmtError(w, http.StatusMethodNotAllowed, "GET or DELETE only")
+		mgmtError(w, http.StatusMethodNotAllowed, "GET, PATCH or DELETE only")
 	}
 }
 
@@ -1176,20 +1295,11 @@ func (m *ManagementServer) listBridgeAdapters() []map[string]any {
 			caps = append(caps, c)
 		}
 
-		project := ""
-		m.bridgeServer.enginesMu.RLock()
-		for pName, ref := range m.bridgeServer.engines {
-			if ref.platform != nil && ref.platform.Name() == name {
-				project = pName
-				break
-			}
-		}
-		m.bridgeServer.enginesMu.RUnlock()
-
 		adapters = append(adapters, map[string]any{
 			"platform":     name,
-			"project":      project,
+			"project":      a.project,
 			"capabilities": caps,
+			"connected_at": a.connectedAt.Format(time.RFC3339),
 		})
 	}
 	return adapters
